@@ -6,6 +6,8 @@ use App\Models\Product;
 use App\Models\StockIngredient;
 use App\Models\Unit;
 use Illuminate\Support\Facades\Log;
+use App\Jobs\SendLowStockNotification;
+use App\Models\StockNotification;
 
 class StockService
 {
@@ -49,5 +51,45 @@ class StockService
         $this->checkStockLevels($product->ingredients);
     }
 
-   
+    public function checkStockLevels($ingredients): void
+    {
+        $ingredientIds = $ingredients->pluck('id');
+        $stockIngredients = StockIngredient::whereIn('ingredient_id', $ingredientIds)->get()->keyBy('ingredient_id');
+
+        foreach ($ingredients as $ingredient) {
+            $stockIngredient = $stockIngredients[$ingredient->id] ?? null;
+            if (!$stockIngredient) {
+                continue;
+            }
+
+            $merchantId = $stockIngredient->merchant_id ?? null;
+            if (!$merchantId) {
+                Log::warning("Missing merchant_id for ingredient ID {$ingredient->id}.");
+                continue;
+            }
+
+            $threshold = $ingredient->alert_threshold_percentage * 0.01;
+
+            $existingNotification = StockNotification::where('ingredient_id', $ingredient->id)
+                ->where('merchant_id', $merchantId)
+                ->where('is_notified', true)
+                ->first();
+            Log::info("test" .$threshold);
+
+            if (($stockIngredient->quantity <= $threshold) && !$existingNotification) {
+
+                SendLowStockNotification::dispatch($ingredient);
+
+                Log::info("Low stock notification sent", ['ingredient_id' => $ingredient->id, 'merchant_id' => $merchantId]);
+
+                StockNotification::create(
+                    ['ingredient_id' => $ingredient->id, 'merchant_id' => $merchantId, 'is_notified' => true, 'sent_at' => now()],
+                );
+            } elseif ($stockIngredient->quantity > $threshold && $existingNotification) {
+
+                $existingNotification->update(['is_notified' => false]);
+            }
+        }
+    }
+
 }
